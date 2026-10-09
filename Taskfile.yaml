@@ -1,0 +1,28 @@
+version: '3'
+
+dotenv: ['.env']
+
+includes:
+  oci:
+    taskfile: ./oci-flow/Taskfile.yaml
+    dir: ./oci-flow
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  check:
+    desc: Check .env and required CLIs
+    cmds:
+      - |
+        set -e
+        [ -f .env ] || { echo "ERROR: .env not found. Run: cp .env.example .env"; exit 1; }
+        for var in AKUITY_ORG_NAME AKUITY_ARGOCD_INSTANCE_NAME AKUITY_KARGO_INSTANCE_NAME \
+                   ARGOCD_DESTINATION GITOPS_REPO_URL GITHUB_USERNAME GITHUB_PAT OCI_REPO_PREFIX; do
+          [ -n "$(printenv "$var")" ] || { echo "ERROR: $var is not set"; exit 1; }
+        done
+        for tool in akuity kargo envsubst kubectl; do
+          command -v "$tool" >/dev/null || { echo "ERROR: $tool is not installed"; exit 1; }
+        done
+        echo "✓ .env and tools look good"

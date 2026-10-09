@@ -1,0 +1,71 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: oci-promotion
+  namespace: oci-flow
+spec:
+  vars:
+    - name: gitopsRepo
+      value: ${GITOPS_REPO_URL}
+    - name: imageRepo
+      value: public.ecr.aws/nginx/nginx
+    - name: ociRepo
+      value: ${OCI_REPO_PREFIX}/oci-flow/nginx
+
+  steps:
+    # 1. Get the source. Only main: there are no stage branches in this flow.
+    - uses: git-clone
+      as: clone
+      config:
+        repoURL: ${{ vars.gitopsRepo }}
+        checkout:
+          - branch: main
+            path: ./src
+
+    # 2. Set the nginx tag from the Freight being promoted.
+    - uses: kustomize-set-image
+      as: set-image
+      config:
+        path: ./src/oci-flow/app/base
+        images:
+          - image: ${{ vars.imageRepo }}
+            tag: ${{ imageFrom(vars.imageRepo).Tag }}
+
+    # 3. Render this stage's overlay into ./out.
+    - uses: kustomize-build
+      as: render
+      config:
+        path: ./src/oci-flow/app/overlays/${{ ctx.stage }}
+        outPath: ./out
+
+    # 4. Pack ./out. gzip: true is required: tar defaults to uncompressed, but
+    #    oci-push labels the layer as gzip, and Argo CD can't read a mismatch.
+    - uses: tar
+      as: archive
+      config:
+        inPath: ./out
+        outPath: ./manifests.tar.gz
+        gzip: true
+
+    # 5. Push to the registry, tagged with the stage name.
+    - uses: oci-push
+      as: push
+      config:
+        srcPath: ./manifests.tar.gz
+        destRef: ${{ vars.ociRepo }}:${{ ctx.stage }}
+        annotations:
+          org.opencontainers.image.source: ${{ vars.gitopsRepo }}
+          io.kargo.stage: ${{ ctx.stage }}
+          io.kargo.promotion: ${{ ctx.promotion }}
+
+    # 6. Point Argo CD at the exact digest just pushed and wait for it to sync.
+    #    Must be the digest, not the tag, or this step waits forever.
+    - uses: argocd-update
+      as: deploy
+      config:
+        apps:
+          - name: oci-flow-nginx-${{ ctx.stage }}
+            sources:
+              - repoURL: oci://${{ vars.ociRepo }}
+                desiredRevision: ${{ task.outputs.push.digest }}
+                updateTargetRevision: true

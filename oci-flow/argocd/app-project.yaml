@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: oci-flow
+  namespace: argocd
+spec:
+  sourceRepos:
+    - '*'
+  destinations:
+    - name: '*'
+      namespace: 'oci-flow-*'
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

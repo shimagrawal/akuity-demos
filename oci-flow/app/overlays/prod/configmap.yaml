@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-content
+data:
+  index.html: |-
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Prod</title>
+    </head>
+    <body>
+      <h1>NGINX - PROD</h1>
+      <p>Deployed through Kargo --> Argo CD</p>
+    </body>
+    </html>

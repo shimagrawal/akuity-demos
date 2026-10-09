@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: oci-flow
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - stage: dev
+          - stage: test
+          - stage: prod
+  template:
+    metadata:
+      name: oci-flow-nginx-{{stage}}
+      annotations:
+        # lets the Kargo Stage update this Application
+        kargo.akuity.io/authorized-stage: oci-flow:{{stage}}
+    spec:
+      project: oci-flow
+      source:
+        # rendered manifests published by Kargo, not a Git branch
+        repoURL: oci://${OCI_REPO_PREFIX}/oci-flow/nginx
+        # the stage tag; Kargo replaces it with the pushed digest on promotion
+        targetRevision: '{{stage}}'
+        path: .
+      destination:
+        name: ${ARGOCD_DESTINATION}
+        namespace: oci-flow-{{stage}}
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
