@@ -1,7 +1,7 @@
 version: '3'
 
-# OCI flow demo: Kargo renders each stage, pushes it to an OCI registry,
-# and points Argo CD at the pushed digest. Run from the repo root: task oci:<name>
+# OCI flow demo: Kargo renders every stage once, pushes them as one OCI artifact,
+# and points each stage's Argo CD Application at that same digest. Run from the repo root: task oci:<name>
 
 vars:
   # Only these are substituted, so Kargo's ${{ ... }} expressions are left alone.
@@ -17,9 +17,9 @@ tasks:
           akuity argocd apply -f - --name "$AKUITY_ARGOCD_INSTANCE_NAME" --org-name "$AKUITY_ORG_NAME"
 
   apply-kargo:
-    desc: Create the Kargo Project, credentials, Warehouse, PromotionTask and Stages
+    desc: Create the Kargo Project, credentials, Warehouse, PromotionTasks and Stages
     cmds:
-      - for: [kargo/project.yaml, secrets.yaml, kargo/warehouse.yaml, kargo/promotiontask.yaml, kargo/stages.yaml]
+      - for: [kargo/project.yaml, secrets.yaml, kargo/warehouse.yaml, kargo/promotiontasks.yaml, kargo/stages.yaml]
         cmd: >-
           envsubst '{{.ENVSUBST_VARS}}' < {{.ITEM}} |
           akuity kargo apply -f - --name "$AKUITY_KARGO_INSTANCE_NAME" --org-name "$AKUITY_ORG_NAME"
@@ -36,6 +36,14 @@ tasks:
       STAGE: '{{.STAGE | default "dev"}}'
     cmds:
       - kubectl kustomize app/overlays/{{.STAGE}}
+
+  render-all:
+    desc: Build the artifact layout locally (dev/, test/, prod/) into .out/
+    cmds:
+      - rm -rf .out
+      - for: [dev, test, prod]
+        cmd: mkdir -p .out/{{.ITEM}} && kubectl kustomize app/overlays/{{.ITEM}} > .out/{{.ITEM}}/manifests.yaml
+      - find .out -type f
 
   port-forward:
     desc: Port-forward to a stage's nginx (task oci:port-forward STAGE=dev)

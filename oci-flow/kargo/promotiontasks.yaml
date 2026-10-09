@@ -1,0 +1,135 @@
+# Render once, deploy everywhere.
+#
+#   dev   -> oci-publish: render dev, test and prod from one commit, push them as
+#            ONE artifact, record its digest on the Freight, deploy dev
+#   test  -> oci-deploy:  deploy the digest recorded on the Freight
+#   prod  -> oci-deploy:  deploy the digest recorded on the Freight
+#
+# Every stage runs the same artifact; each Argo CD Application reads its own
+# subdirectory of it (path: dev | test | prod).
+
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: oci-publish
+  namespace: oci-flow
+spec:
+  vars:
+    - name: gitopsRepo
+      value: ${GITOPS_REPO_URL}
+    - name: imageRepo
+      value: public.ecr.aws/nginx/nginx
+    - name: ociRepo
+      value: ${OCI_REPO_PREFIX}/oci-flow/nginx
+
+  steps:
+    # 1. Check out the exact commit pinned in the Freight, not whatever main is now.
+    - uses: git-clone
+      as: clone
+      config:
+        repoURL: ${{ vars.gitopsRepo }}
+        checkout:
+          - commit: ${{ commitFrom(vars.gitopsRepo).ID }}
+            path: ./src
+
+    # 2. Set the nginx tag from the Freight.
+    - uses: kustomize-set-image
+      as: set-image
+      config:
+        path: ./src/oci-flow/app/base
+        images:
+          - image: ${{ vars.imageRepo }}
+            tag: ${{ imageFrom(vars.imageRepo).Tag }}
+
+    # 3. Render every stage, each into its own subdirectory. Adding a stage
+    #    means adding a step here: promotion steps cannot loop.
+    - uses: kustomize-build
+      as: render-dev
+      config:
+        path: ./src/oci-flow/app/overlays/dev
+        outPath: ./out/dev
+    - uses: kustomize-build
+      as: render-test
+      config:
+        path: ./src/oci-flow/app/overlays/test
+        outPath: ./out/test
+    - uses: kustomize-build
+      as: render-prod
+      config:
+        path: ./src/oci-flow/app/overlays/prod
+        outPath: ./out/prod
+
+    # 4. Pack all of ./out. gzip: true is required: tar defaults to uncompressed,
+    #    but oci-push labels the layer as gzip, and Argo CD can't read a mismatch.
+    - uses: tar
+      as: archive
+      config:
+        inPath: ./out
+        outPath: ./manifests.tar.gz
+        gzip: true
+
+    # 5. Push once, under an immutable tag named after the Freight.
+    - uses: oci-push
+      as: push
+      config:
+        srcPath: ./manifests.tar.gz
+        destRef: ${{ vars.ociRepo }}:${{ ctx.targetFreight.name }}
+        annotations:
+          org.opencontainers.image.source: ${{ vars.gitopsRepo }}
+          org.opencontainers.image.revision: ${{ commitFrom(vars.gitopsRepo).ID }}
+          io.kargo.freight: ${{ ctx.targetFreight.name }}
+          io.kargo.promotion: ${{ ctx.promotion }}
+
+    # 6. Move the `latest` tag to the same digest (a retag: no upload). The
+    #    Argo CD Applications start from this tag before Kargo pins a digest.
+    - uses: oci-push
+      as: retag
+      config:
+        srcRef: ${{ vars.ociRepo }}@${{ task.outputs.push.digest }}
+        destRef: ${{ vars.ociRepo }}:latest
+
+    # 7. Record the digest on the Freight. test and prod read it back from there,
+    #    so they deploy this exact artifact without rendering anything.
+    - uses: set-metadata
+      as: record
+      config:
+        updates:
+          - kind: Freight
+            name: ${{ ctx.targetFreight.name }}
+            values:
+              ociManifests:
+                repo: ${{ vars.ociRepo }}
+                digest: ${{ task.outputs.push.digest }}
+
+    # 8. Deploy dev. Must be the digest, not a tag, or this step waits forever.
+    - uses: argocd-update
+      as: deploy
+      config:
+        apps:
+          - name: oci-flow-nginx-${{ ctx.stage }}
+            sources:
+              - repoURL: oci://${{ vars.ociRepo }}
+                desiredRevision: ${{ task.outputs.push.digest }}
+                updateTargetRevision: true
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: oci-deploy
+  namespace: oci-flow
+spec:
+  vars:
+    - name: ociRepo
+      value: ${OCI_REPO_PREFIX}/oci-flow/nginx
+
+  steps:
+    # No clone and no render: deploy the digest dev published for this Freight.
+    - uses: argocd-update
+      as: deploy
+      config:
+        apps:
+          - name: oci-flow-nginx-${{ ctx.stage }}
+            sources:
+              - repoURL: oci://${{ vars.ociRepo }}
+                desiredRevision: ${{ freightMetadata(ctx.targetFreight.name).ociManifests.digest }}
+                updateTargetRevision: true

@@ -5,7 +5,17 @@ metadata:
   namespace: oci-flow
 spec:
   subscriptions:
+    # A new nginx tag produces new Freight.
     - image:
         repoURL: public.ecr.aws/nginx/nginx
         constraint: ^1.27.0
+        discoveryLimit: 5
+
+    # So does a change to this demo's app config. The Freight pins the commit,
+    # so all stages are rendered from the same source in one promotion.
+    - git:
+        repoURL: ${GITOPS_REPO_URL}
+        branch: main
+        includePaths:
+          - oci-flow/app
         discoveryLimit: 5

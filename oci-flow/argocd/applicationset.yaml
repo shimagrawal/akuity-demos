@@ -21,9 +21,10 @@ spec:
       source:
         # rendered manifests published by Kargo, not a Git branch
         repoURL: oci://${OCI_REPO_PREFIX}/oci-flow/nginx
-        # the stage tag; Kargo replaces it with the pushed digest on promotion
-        targetRevision: '{{stage}}'
-        path: .
+        # one artifact for every stage; Kargo replaces the tag with the digest
+        targetRevision: latest
+        # each stage reads its own subdirectory of that artifact
+        path: '{{stage}}'
       destination:
         name: ${ARGOCD_DESTINATION}
         namespace: oci-flow-{{stage}}

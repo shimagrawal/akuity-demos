@@ -14,7 +14,7 @@ spec:
     spec:
       steps:
         - task:
-            name: oci-promotion
+            name: oci-publish
 ---
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Stage
@@ -33,7 +33,7 @@ spec:
     spec:
       steps:
         - task:
-            name: oci-promotion
+            name: oci-deploy
 ---
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Stage
@@ -52,4 +52,4 @@ spec:
     spec:
       steps:
         - task:
-            name: oci-promotion
+            name: oci-deploy

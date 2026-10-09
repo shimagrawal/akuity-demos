@@ -1,17 +1,32 @@
 # OCI flow
 
-Promote nginx through `dev → test → prod`, delivering rendered manifests as OCI
-artifacts instead of Git branches.
+Promote nginx through `dev → test → prod`, delivering rendered manifests as
+**one OCI artifact** that every stage deploys by digest. No stage branches, and
+prod runs exactly the bytes dev produced.
 
 ```
-Warehouse (nginx tags) → Freight
-                           │
-Stage promotion:  git-clone main → kustomize-set-image → kustomize-build
-                  → tar (gzip) → oci-push ghcr.io/…/oci-flow/nginx:<stage>
-                  → argocd-update (desiredRevision = pushed digest)
-                           │
-Argo CD:          oci-flow-nginx-<stage>  source oci://ghcr.io/…/oci-flow/nginx @ sha256:…
-                  → namespace oci-flow-<stage>
+Warehouse (nginx tag + oci-flow/app commit) → Freight
+                                │
+dev   (oci-publish):  git-clone <freight commit> → kustomize-set-image
+                      → kustomize-build dev  → ./out/dev
+                      → kustomize-build test → ./out/test
+                      → kustomize-build prod → ./out/prod
+                      → tar → oci-push :<freight>  → retag :latest
+                      → set-metadata (digest → Freight)
+                      → argocd-update oci-flow-nginx-dev  @ sha256:X
+test  (oci-deploy):   argocd-update oci-flow-nginx-test   @ sha256:X  (from Freight)
+prod  (oci-deploy):   argocd-update oci-flow-nginx-prod   @ sha256:X  (from Freight)
+
+Argo CD: every app → oci://ghcr.io/…/oci-flow/nginx @ sha256:X, path: <stage>
+```
+
+The artifact holds every stage, and each Application reads its own folder:
+
+```
+sha256:X
+├── dev/manifests.yaml
+├── test/manifests.yaml
+└── prod/manifests.yaml
 ```
 
 Requires Kargo v1.12.0+ (`tar` step and `oci-push` `srcPath`) and Argo CD with
@@ -23,37 +38,47 @@ From the repository root, after `cp .env.example .env` and `akuity login`:
 
 ```bash
 task check
-task oci:render STAGE=dev   # optional: preview what dev renders
+task oci:render-all         # optional: build the artifact layout locally into oci-flow/.out
 task oci:setup
 ```
 
 | Created | Where |
 |---|---|
 | AppProject `oci-flow`, ApplicationSet `oci-flow` → apps `oci-flow-nginx-{dev,test,prod}` | Argo CD |
-| Project `oci-flow`, Secrets `gitops-repo` (git) and `ghcr` (image), Warehouse `nginx`, PromotionTask `oci-promotion`, Stages `dev`, `test`, `prod` | Kargo |
+| Project `oci-flow`, Secrets `gitops-repo` (git) and `ghcr` (image), Warehouse `nginx`, PromotionTasks `oci-publish` and `oci-deploy`, Stages `dev`, `test`, `prod` | Kargo |
 
-The Applications show **Unknown** until the first promotion pushes the
-`:<stage>` tag.
+The Applications show an error until the first dev promotion pushes the
+`:latest` tag.
 
 ## First promotion
 
-1. Promote the newest Freight to `dev` in the Kargo UI.
+1. Promote the newest Freight to `dev` in the Kargo UI. Use Freight that has
+   both an image and a commit: Freight from before the Warehouse watched Git
+   has no commit, and `oci-publish` needs one.
 2. The `push` step creates the GHCR package `akuity-demos/oci-flow/nginx`,
-   which is private by default. Make it public: GitHub → Packages → the
-   package → Package settings → Change visibility → Public.
-3. Re-run the `dev` promotion if `deploy` failed waiting on Argo CD.
+   which is private by default. This demo keeps it **public**: GitHub →
+   Packages → the package → Package settings → Change visibility → Public.
+3. Promote the same Freight to `test`, then `prod`.
 
 ## Check it
 
-- Argo CD shows `oci-flow-nginx-dev` with an `oci://` source and a `sha256:`
-  revision matching the `push` step's `digest` output.
-- `task oci:port-forward STAGE=dev` → http://localhost:8080 shows **NGINX - DEV**.
+- All three Applications show the **same** `sha256:` revision, matching the
+  dev promotion's `push` step `digest` output, with `path` `dev`, `test` and
+  `prod`.
+- `task oci:port-forward STAGE=dev` → http://localhost:8080 shows
+  **NGINX - DEV** (`STAGE=test PORT=8081`, `STAGE=prod PORT=8082` likewise).
 - The repository has no `stage/*` branches.
 
-Then promote to `test` and `prod` (`task oci:port-forward STAGE=test PORT=8081`).
+## Things to know
 
-## Gotchas
-
+- **Config changes enter at dev.** Editing `app/overlays/prod` creates new
+  Freight (the Warehouse watches `oci-flow/app`), but prod only gets it after
+  that Freight passes dev and test. That is the point: prod never runs config
+  that dev did not render.
+- **Adding a stage** means adding a `kustomize-build` step to `oci-publish`, a
+  Stage, and a list element in the ApplicationSet. Promotion steps cannot loop.
+- **Every stage's manifests are in every artifact.** Fine here; never put
+  Secrets in rendered manifests, especially in a public package.
 - `tar` must have `gzip: true`. It defaults to uncompressed, `oci-push` labels
   the layer as gzip, and Argo CD cannot read the mismatch — while the promotion
   still goes green.
