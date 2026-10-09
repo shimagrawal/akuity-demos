@@ -11,11 +11,11 @@ spec:
         constraint: ^1.27.0
         discoveryLimit: 5
 
-    # So does a change to this demo's app config. The Freight pins the commit,
-    # so all stages are rendered from the same source in one promotion.
+    # So does a change to either app (Kustomize nginx or Helm hello). The
+    # Freight pins the commit, so all stages render from the same source.
     - git:
         repoURL: ${GITOPS_REPO_URL}
         branch: main
         includePaths:
-          - oci-flow/app
+          - oci-flow/apps
         discoveryLimit: 5

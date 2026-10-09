@@ -23,8 +23,11 @@ spec:
         repoURL: oci://${OCI_REPO_PREFIX}/oci-flow/nginx
         # one artifact for every stage; Kargo replaces the tag with the digest
         targetRevision: latest
-        # each stage reads its own subdirectory of that artifact
+        # each stage reads its own subdirectory of that artifact...
         path: '{{stage}}'
+        # ...including every app in it (<stage>/nginx, <stage>/hello)
+        directory:
+          recurse: true
       destination:
         name: ${ARGOCD_DESTINATION}
         namespace: oci-flow-{{stage}}

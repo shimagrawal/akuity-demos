@@ -1,33 +1,39 @@
 # OCI flow
 
-Promote nginx through `dev → test → prod`, delivering rendered manifests as
-**one OCI artifact** that every stage deploys by digest. No stage branches, and
-prod runs exactly the bytes dev produced.
+Promote two apps through `dev → test → prod` — **nginx** (Kustomize) and
+**hello** (Helm) — delivering their rendered manifests as **one OCI artifact**
+that every stage deploys by digest. No stage branches, and prod runs exactly
+the bytes dev produced.
 
 ```
-Warehouse (nginx tag + oci-flow/app commit) → Freight
+Warehouse (nginx tag + oci-flow/apps commit) → Freight
                                 │
 dev   (oci-publish):  git-clone <freight commit> → kustomize-set-image
-                      → kustomize-build dev  → ./out/dev
-                      → kustomize-build test → ./out/test
-                      → kustomize-build prod → ./out/prod
+                      → kustomize-build nginx ×3 → ./out/<stage>/nginx
+                      → helm-template   hello ×3 → ./out/<stage>/hello
                       → tar → oci-push :<freight>  → retag :latest
                       → set-metadata (digest → Freight)
                       → argocd-update oci-flow-nginx-dev  @ sha256:X
 test  (oci-deploy):   argocd-update oci-flow-nginx-test   @ sha256:X  (from Freight)
 prod  (oci-deploy):   argocd-update oci-flow-nginx-prod   @ sha256:X  (from Freight)
 
-Argo CD: every app → oci://ghcr.io/…/oci-flow/nginx @ sha256:X, path: <stage>
+Argo CD: every app → oci://ghcr.io/…/oci-flow/nginx @ sha256:X,
+         path: <stage>, directory.recurse: true (picks up both apps)
 ```
 
 The artifact holds every stage, and each Application reads its own folder:
 
 ```
 sha256:X
-├── dev/manifests.yaml
-├── test/manifests.yaml
-└── prod/manifests.yaml
+├── dev/   nginx/  hello/
+├── test/  nginx/  hello/
+└── prod/  nginx/  hello/
 ```
+
+| App | Source | Rendered with | Differs per stage |
+|---|---|---|---|
+| nginx | [`apps/nginx`](apps/nginx): Kustomize base + overlays | `kustomize-build` | page text (ConfigMap); image tag comes from the Freight |
+| hello | [`apps/hello`](apps/hello): Helm chart + `values-<stage>.yaml` | `helm-template` | message, replicas (2 in prod) |
 
 Requires Kargo v1.12.0+ (`tar` step and `oci-push` `srcPath`) and Argo CD with
 OCI source support.
@@ -38,7 +44,7 @@ From the repository root, after `cp .env.example .env` and `akuity login`:
 
 ```bash
 task check
-task oci:render-all         # optional: build the artifact layout locally into oci-flow/.out
+task oci:render-all         # optional: build the artifact layout locally into oci-flow/.out (needs helm)
 task oci:setup
 ```
 
@@ -66,17 +72,20 @@ The Applications show an error until the first dev promotion pushes the
   dev promotion's `push` step `digest` output, with `path` `dev`, `test` and
   `prod`.
 - `task oci:port-forward STAGE=dev` → http://localhost:8080 shows
-  **NGINX - DEV** (`STAGE=test PORT=8081`, `STAGE=prod PORT=8082` likewise).
+  **NGINX - DEV**; `task oci:port-forward STAGE=dev APP=hello PORT=8081` →
+  `Hello from Helm - DEV`. Same for `test` and `prod`.
 - The repository has no `stage/*` branches.
 
 ## Things to know
 
-- **Config changes enter at dev.** Editing `app/overlays/prod` creates new
-  Freight (the Warehouse watches `oci-flow/app`), but prod only gets it after
+- **Config changes enter at dev.** Editing `apps/nginx/overlays/prod` or
+  `apps/hello/values-prod.yaml` creates new Freight (the Warehouse watches
+  `oci-flow/apps`), but prod only gets it after
   that Freight passes dev and test. That is the point: prod never runs config
   that dev did not render.
-- **Adding a stage** means adding a `kustomize-build` step to `oci-publish`, a
-  Stage, and a list element in the ApplicationSet. Promotion steps cannot loop.
+- **Adding a stage** means one render step per app in `oci-publish`, a Stage,
+  and a list element in the ApplicationSet. **Adding an app** means one render
+  step per stage into `./out/<stage>/<app>`. Promotion steps cannot loop.
 - **Every stage's manifests are in every artifact.** Fine here; never put
   Secrets in rendered manifests, especially in a public package.
 - `tar` must have `gzip: true`. It defaults to uncompressed, `oci-push` labels

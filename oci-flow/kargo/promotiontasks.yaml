@@ -1,12 +1,15 @@
 # Render once, deploy everywhere.
 #
-#   dev   -> oci-publish: render dev, test and prod from one commit, push them as
-#            ONE artifact, record its digest on the Freight, deploy dev
+#   dev   -> oci-publish: render every app (nginx with Kustomize, hello with
+#            Helm) for dev, test and prod from one commit, push them as ONE
+#            artifact, record its digest on the Freight, deploy dev
 #   test  -> oci-deploy:  deploy the digest recorded on the Freight
 #   prod  -> oci-deploy:  deploy the digest recorded on the Freight
 #
 # Every stage runs the same artifact; each Argo CD Application reads its own
-# subdirectory of it (path: dev | test | prod).
+# subdirectory of it (path: dev | test | prod):
+#
+#   dev/nginx/   dev/hello/   test/nginx/   test/hello/   prod/nginx/   prod/hello/
 
 apiVersion: kargo.akuity.io/v1alpha1
 kind: PromotionTask
@@ -36,28 +39,59 @@ spec:
     - uses: kustomize-set-image
       as: set-image
       config:
-        path: ./src/oci-flow/app/base
+        path: ./src/oci-flow/apps/nginx/base
         images:
           - image: ${{ vars.imageRepo }}
             tag: ${{ imageFrom(vars.imageRepo).Tag }}
 
-    # 3. Render every stage, each into its own subdirectory. Adding a stage
-    #    means adding a step here: promotion steps cannot loop.
+    # 3. Render every app for every stage, each into ./out/<stage>/<app>.
+    #    Adding a stage or an app means adding steps here: steps cannot loop.
+
+    # nginx: Kustomize overlays
     - uses: kustomize-build
-      as: render-dev
+      as: render-nginx-dev
       config:
-        path: ./src/oci-flow/app/overlays/dev
-        outPath: ./out/dev
+        path: ./src/oci-flow/apps/nginx/overlays/dev
+        outPath: ./out/dev/nginx
     - uses: kustomize-build
-      as: render-test
+      as: render-nginx-test
       config:
-        path: ./src/oci-flow/app/overlays/test
-        outPath: ./out/test
+        path: ./src/oci-flow/apps/nginx/overlays/test
+        outPath: ./out/test/nginx
     - uses: kustomize-build
-      as: render-prod
+      as: render-nginx-prod
       config:
-        path: ./src/oci-flow/app/overlays/prod
-        outPath: ./out/prod
+        path: ./src/oci-flow/apps/nginx/overlays/prod
+        outPath: ./out/prod/nginx
+
+    # hello: Helm chart with values-<stage>.yaml on top of values.yaml
+    - uses: helm-template
+      as: render-hello-dev
+      config:
+        path: ./src/oci-flow/apps/hello
+        releaseName: hello
+        valuesFiles:
+          - ./src/oci-flow/apps/hello/values-dev.yaml
+        outPath: ./out/dev/hello
+        outLayout: flat
+    - uses: helm-template
+      as: render-hello-test
+      config:
+        path: ./src/oci-flow/apps/hello
+        releaseName: hello
+        valuesFiles:
+          - ./src/oci-flow/apps/hello/values-test.yaml
+        outPath: ./out/test/hello
+        outLayout: flat
+    - uses: helm-template
+      as: render-hello-prod
+      config:
+        path: ./src/oci-flow/apps/hello
+        releaseName: hello
+        valuesFiles:
+          - ./src/oci-flow/apps/hello/values-prod.yaml
+        outPath: ./out/prod/hello
+        outLayout: flat
 
     # 4. Pack all of ./out. gzip: true is required: tar defaults to uncompressed,
     #    but oci-push labels the layer as gzip, and Argo CD can't read a mismatch.
