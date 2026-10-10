@@ -4,3 +4,4 @@
 .out/
 .validate/
 tools/schemas/
+tools/e2e/kubeconfig

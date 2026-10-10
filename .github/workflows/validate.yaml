@@ -1,7 +1,8 @@
 name: validate
 
-# Runs the same local checks as `task oci:validate`: Kargo resources, Kargo step
-# configs, Argo CD resources and rendered manifests, against pinned schemas.
+# Runs the same local checks as `task validate`, for every demo with a demo.yaml:
+# Kargo resources, Kargo step configs, Argo CD resources and rendered manifests,
+# against pinned schemas.
 on:
   pull_request:
   push:
@@ -17,7 +18,7 @@ jobs:
     defaults:
       run:
         # An explicit `bash` turns on pipefail (`bash -eo pipefail`). Without it,
-        # `task oci:validate | tee validate.txt` reports tee's exit code, and a
+        # `task validate | tee validate.txt` reports tee's exit code, and a
         # failed validation would leave the job green.
         shell: bash
     env:
@@ -63,15 +64,15 @@ jobs:
           path: tools/schemas
           key: schemas-${{ hashFiles('Taskfile.yaml') }}
 
-      - name: Validate oci-flow
+      - name: Validate all demos
         run: |
-          task oci:validate | tee validate.txt
+          task validate | tee validate.txt
 
       - name: Summary
         if: always()
         run: |
           {
-            echo '### oci-flow validation'
+            echo '### Validation'
             echo '```'
             cat validate.txt 2>/dev/null || echo "validation did not run"
             echo '```'

@@ -14,18 +14,16 @@ vars:
   ARGOCD_VERSION: v3.5.4
   K8S_VERSION: 1.36.1
 
+# Passed to tools/*.sh.
+env:
+  KARGO_VERSION: '{{.KARGO_VERSION}}'
+  ARGOCD_VERSION: '{{.ARGOCD_VERSION}}'
+  K8S_VERSION: '{{.K8S_VERSION}}'
+
 includes:
   oci:
     taskfile: ./oci-flow/Taskfile.yaml
     dir: ./oci-flow
-    vars:
-      KARGO_VERSION: '{{.KARGO_VERSION}}'
-      ARGOCD_VERSION: '{{.ARGOCD_VERSION}}'
-      K8S_VERSION: '{{.K8S_VERSION}}'
-      KARGO_SCHEMAS: ../tools/schemas/kargo-{{.KARGO_VERSION}}
-      KARGO_STEP_SCHEMAS: ../tools/schemas/kargo-steps-{{.KARGO_VERSION}}
-      ARGOCD_SCHEMAS: ../tools/schemas/argocd-{{.ARGOCD_VERSION}}
-      K8S_SCHEMAS: ../tools/schemas/k8s-{{.K8S_VERSION}}
 
 tasks:
   default:
@@ -47,6 +45,61 @@ tasks:
         done
         echo "✓ .env and tools look good"
   
+  # --- Shared tooling. Works for any demo folder with a demo.yaml. ----------
+
+  validate:
+    desc: Validate a demo (DEMO=oci-flow), or every demo when DEMO is not set (~1s each)
+    silent: true
+    deps: [schemas]
+    preconditions:
+      - sh: command -v flux-schema
+        msg: 'flux-schema is not installed: see the README'
+    vars:
+      DEMOS:
+        sh: '{{if .DEMO}}echo {{.DEMO}}{{else}}for f in */demo.yaml; do dirname "$f"; done{{end}}'
+    cmds:
+      - |
+        demos="{{.DEMOS | catLines}}"
+        set -- $demos
+        rc=0
+        for demo in $demos; do
+          [ "$#" -gt 1 ] && printf '\n### %s\n' "$demo"
+          tools/validate.sh "$demo" || rc=1
+        done
+        exit $rc
+
+  render:
+    desc: Render a demo's apps (DEMO=oci-flow) into <demo>/.out, or one stage to stdout (STAGE=dev)
+    silent: true
+    requires:
+      vars: [DEMO]
+    cmds:
+      - tools/render.sh {{.DEMO}} {{.STAGE}}
+
+  e2e:
+    desc: End-to-end test of a demo with real Kargo + Argo CD in kind (DEMO=oci-flow; ~5-15 min; KEEP=1 keeps the cluster)
+    requires:
+      vars: [DEMO]
+    cmds:
+      - tools/e2e/e2e.sh all {{.DEMO}}
+
+  e2e:up:
+    desc: Create the e2e kind cluster with registry, Git server, Argo CD and Kargo
+    cmds:
+      - tools/e2e/e2e.sh up
+
+  e2e:run:
+    desc: Seed, apply, promote and check a demo on a running e2e cluster (DEMO=oci-flow; ~2-3 min)
+    requires:
+      vars: [DEMO]
+    cmds:
+      - tools/e2e/e2e.sh run {{.DEMO}}
+
+  e2e:down:
+    desc: Delete the e2e kind cluster
+    cmds:
+      - tools/e2e/e2e.sh down
+
   schemas:
     desc: Extract pinned Kargo, Argo CD and Kubernetes JSON schemas into tools/schemas
     silent: true

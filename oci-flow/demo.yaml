@@ -1,0 +1,41 @@
+# How the shared tooling (tools/) validates and end-to-end tests this demo.
+# Everything else about the demo lives in kargo/, argocd/ and apps/.
+#
+#   task validate DEMO=oci-flow     task e2e DEMO=oci-flow
+
+# Kargo Project (and namespace) the demo's kargo/ files create.
+name: oci-flow
+
+# Promotion order. Each stage is promoted after the previous one is verified.
+stages: [dev, test, prod]
+
+# How to render each app per stage, mirroring the render steps in
+# kargo/promotiontasks.yaml (oci-publish). {stage} is replaced by the stage name.
+# Rendered output is validated against the pinned Kubernetes schemas.
+render:
+  - app: nginx
+    kustomize: apps/nginx/overlays/{stage}
+  - app: hello
+    helm:
+      chart: apps/hello
+      release: hello
+      values: apps/hello/values-{stage}.yaml
+
+e2e:
+  # Warehouse to refresh after seeding the in-cluster Git server.
+  warehouse: nginx
+  # Argo CD Application per stage, as the demo's ApplicationSet names them.
+  application: oci-flow-nginx-{stage}
+  # Freight metadata holding the artifact digest every stage must run
+  # (written by the set-metadata step in oci-publish).
+  digestFrom: ociManifests.digest
+  # OCI repository (under OCI_REPO_PREFIX) the Applications pull from. Argo CD
+  # is told it speaks plain HTTP inside the test cluster.
+  ociRepository: oci-flow/nginx
+  # Requests made from inside the cluster after promotion, and the text each
+  # response must contain. {stage} / {STAGE}: stage name, lower / upper case.
+  checks:
+    - url: http://nginx.oci-flow-{stage}.svc
+      expect: NGINX - {STAGE}
+    - url: http://hello.oci-flow-{stage}.svc
+      expect: Hello from Helm - {STAGE}

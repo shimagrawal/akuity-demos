@@ -1,15 +1,18 @@
 name: e2e
 
-# End-to-end test of oci-flow: real Kargo + Argo CD in a kind cluster run the
-# demo's own files and promote dev -> test -> prod. Slow (~5-15 min), so it
-# runs only when the flow itself changes, weekly to catch upstream drift, and on
-# demand. The fast `validate` workflow stays the check for every PR.
+# End-to-end test of every demo with a demo.yaml, one job each: real Kargo +
+# Argo CD in a kind cluster run the demo's own files and promote its stages.
+# Slow (~5-15 min), so it runs only when a flow or the shared tooling changes,
+# weekly to catch upstream drift, and on demand. The fast `validate` workflow
+# stays the check for every PR.
 on:
   pull_request:
     paths:
-      - 'oci-flow/kargo/**'
-      - 'oci-flow/argocd/**'
-      - 'oci-flow/e2e/**'
+      - '*/kargo/**'
+      - '*/argocd/**'
+      - '*/demo.yaml'
+      - 'tools/e2e/**'
+      - 'tools/lib.sh'
       - 'Taskfile.yaml'
       - '.github/workflows/e2e.yaml'
   # schedule:
@@ -25,7 +28,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Every top-level folder with a demo.yaml, as a JSON list for the matrix.
+  demos:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.find.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          list="$(for f in */demo.yaml; do dirname "$f"; done | jq -R . | jq -sc .)"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "Demos: $list"
+
   e2e:
+    needs: demos
+    name: e2e (${{ matrix.demo }})
+    strategy:
+      fail-fast: false
+      matrix:
+        demo: ${{ fromJSON(needs.demos.outputs.list) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -49,22 +71,28 @@ jobs:
 
       - uses: azure/setup-helm@v4
 
-      - name: Install kind
+      - name: Install kind and yq
         env:
           KIND_VERSION: v0.32.0
+          # Pinned rather than the runner's copy, whose version changes with the image.
+          YQ_VERSION: v4.47.1
         run: |
           curl -fsSLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
           sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          sudo curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
           kind version
+          yq --version
 
       - name: End-to-end test
-        run: task oci:e2e
+        run: task e2e DEMO=${{ matrix.demo }}
 
       - name: Diagnostics
         if: failure()
         run: |
-          ctx=kind-oci-e2e
-          kubectl --context $ctx get pods -A || true
-          kubectl --context $ctx -n oci-flow get promotions,freight,stages || true
-          kubectl --context $ctx -n argocd get applications -o wide || true
-          kubectl --context $ctx -n kargo logs deploy/kargo-controller --tail=100 || true
+          export KUBECONFIG=tools/e2e/kubeconfig   # the test cluster's own kubeconfig
+          project="$(yq -r .name "${{ matrix.demo }}/demo.yaml")"
+          kubectl get pods -A || true
+          kubectl -n "$project" get promotions,freight,stages || true
+          kubectl -n argocd get applications -o wide || true
+          kubectl -n kargo logs deploy/kargo-controller --tail=100 || true
