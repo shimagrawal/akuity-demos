@@ -2,10 +2,29 @@ version: '3'
 
 dotenv: ['.env']
 
+vars:
+  # Versions the local schema checks are pinned to. Match them to your
+  # environment. Schemas are generated into tools/schemas on first use.
+  #   Kargo: the open-source release your Akuity instance is built on
+  #          (Akuity v1.12.2-ak.0 → v1.12.2)
+  #   Argo CD: the open-source release your Akuity instance is built on
+  #          (Akuity v3.5.4-ak.0 → v3.5.4)
+  #   Kubernetes: your cluster's server version (`kubectl version`)
+  KARGO_VERSION: v1.12.2
+  ARGOCD_VERSION: v3.5.4
+  K8S_VERSION: 1.36.1
+
 includes:
   oci:
     taskfile: ./oci-flow/Taskfile.yaml
     dir: ./oci-flow
+    vars:
+      KARGO_VERSION: '{{.KARGO_VERSION}}'
+      ARGOCD_VERSION: '{{.ARGOCD_VERSION}}'
+      K8S_VERSION: '{{.K8S_VERSION}}'
+      KARGO_SCHEMAS: ../tools/schemas/kargo-{{.KARGO_VERSION}}
+      ARGOCD_SCHEMAS: ../tools/schemas/argocd-{{.ARGOCD_VERSION}}
+      K8S_SCHEMAS: ../tools/schemas/k8s-{{.K8S_VERSION}}
 
 tasks:
   default:
@@ -26,3 +45,56 @@ tasks:
           command -v "$tool" >/dev/null || { echo "ERROR: $tool is not installed"; exit 1; }
         done
         echo "✓ .env and tools look good"
+  
+  schemas:
+    desc: Extract pinned Kargo, Argo CD and Kubernetes JSON schemas into tools/schemas
+    silent: true
+    cmds:
+      - task: schemas:kargo
+      - task: schemas:argocd
+      - task: schemas:k8s
+
+  schemas:kargo:
+    desc: Extract Kargo CRD schemas at KARGO_VERSION
+    silent: true
+    vars:
+      OUT: tools/schemas/kargo-{{.KARGO_VERSION}}
+      TMP:
+        sh: mktemp -d -t kargo-crds
+    status:
+      - test -d {{.OUT}}
+    cmds:
+      - defer: rm -rf {{.TMP}}
+      - curl -fsSL https://github.com/akuity/kargo/archive/refs/tags/{{.KARGO_VERSION}}.tar.gz | tar -xz -C {{.TMP}}
+      - rm -rf {{.OUT}}
+      - flux-schema extract crd {{.TMP}}/*/charts/kargo/resources/crds/*.yaml -d {{.OUT}} --strip-description > /dev/null
+      - echo "Kargo {{.KARGO_VERSION}} schemas in {{.OUT}}"
+  
+  schemas:argocd:
+    desc: Extract Argo CD CRD schemas at ARGOCD_VERSION
+    silent: true
+    vars:
+      OUT: tools/schemas/argocd-{{.ARGOCD_VERSION}}
+      TMP:
+        sh: mktemp -d -t argocd-crds
+    status:
+      - test -d {{.OUT}}
+    cmds:
+      - defer: rm -rf {{.TMP}}
+      - for: [application, applicationset, appproject]
+        cmd: curl -fsSL https://raw.githubusercontent.com/argoproj/argo-cd/{{.ARGOCD_VERSION}}/manifests/crds/{{.ITEM}}-crd.yaml -o {{.TMP}}/{{.ITEM}}-crd.yaml
+      - rm -rf {{.OUT}}
+      - flux-schema extract crd {{.TMP}}/*.yaml -d {{.OUT}} --strip-description > /dev/null
+      - echo "Argo CD {{.ARGOCD_VERSION}} schemas in {{.OUT}}"
+
+  schemas:k8s:
+    desc: Extract Kubernetes schemas at K8S_VERSION
+    silent: true
+    vars:
+      OUT: tools/schemas/k8s-{{.K8S_VERSION}}
+    status:
+      - test -d {{.OUT}}
+    cmds:
+      - rm -rf {{.OUT}}
+      - flux-schema extract k8s --version {{.K8S_VERSION}} -d {{.OUT}} --strip-description > /dev/null
+      - echo "Kubernetes {{.K8S_VERSION}} schemas in {{.OUT}}"

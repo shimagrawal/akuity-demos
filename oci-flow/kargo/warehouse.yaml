@@ -4,6 +4,7 @@ metadata:
   name: nginx
   namespace: oci-flow
 spec:
+  interval: 5m0s
   subscriptions:
     # A new nginx tag produces new Freight.
     - image:

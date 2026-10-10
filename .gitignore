@@ -2,3 +2,5 @@
 .DS_Store
 .task/
 .out/
+.validate/
+tools/schemas/

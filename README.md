@@ -19,6 +19,22 @@ task --list              # every demo's tasks, e.g. task oci:setup
 
 Tools: `brew install akuity kargo go-task gettext kubectl`.
 
+## Local validation
+
+Validates Kargo, Argo CD and rendered Kubernetes manifests against schemas
+pinned to your environment (versions in the root `Taskfile.yaml`).
+
+```bash
+# install flux-schema once (macOS arm64; other platforms on its releases page)
+curl -fsSL https://github.com/fluxcd/flux-schema/releases/download/v0.15.0/flux-schema_0.15.0_darwin_arm64.tar.gz \
+  | tar -xz -C /opt/homebrew/bin flux-schema
+
+task oci:validate
+```
+
+Bump `KARGO_VERSION`, `ARGOCD_VERSION` or `K8S_VERSION` when your environment
+is upgraded; the schemas are regenerated on the next run.
+
 ## Layout
 
 ```
