@@ -82,9 +82,24 @@ tasks:
         cmd: envsubst '{{.ENVSUBST_VARS}}' < {{.ITEM}} > .validate/{{.ITEM}}
       - echo "Kargo {{.KARGO_VERSION}}"
       - set -o pipefail; flux-schema validate .validate/kargo -v --concurrent 1 -s {{.KARGO_SCHEMAS}} | sed -E '{{.PRETTY}}' || touch .validate/failed
+      # 2. Step configs inside PromotionTasks, against Kargo's own step schemas.
+      #    flux-schema can't see inside `config:`; tools/lint-task.py can.
+      - echo "Kargo step configs {{.KARGO_VERSION}}"
+      - |
+        for f in .validate/kargo/*.yaml; do
+          yq -o=json ea '[.] | map(select(.kind == "PromotionTask" or .kind == "ClusterPromotionTask"))' "$f" > "$f.json"
+          [ "$(yq 'length' "$f.json")" = 0 ] && continue
+          name="${f#.validate/}"
+          if python3 ../tools/lint-task.py {{.KARGO_STEP_SCHEMAS}} "$f.json" > "$f.lint"; then
+            name="$name" yq -r '.[] | (.spec.steps | length) as $n | "  ✓ " + .kind + "/" + .metadata.name + ": " + ($n | tostring) + (if $n == 1 then " step" else " steps" end) + "   (" + strenv(name) + ")"' "$f.json"
+          else
+            sed "s#^#  ✗ #; s#\$#   ($name)#" "$f.lint"
+            touch .validate/failed
+          fi
+        done
       - echo "Argo CD {{.ARGOCD_VERSION}}"
       - set -o pipefail; flux-schema validate .validate/argocd -v --concurrent 1 -s {{.ARGOCD_SCHEMAS}} | sed -E '{{.PRETTY}}' || touch .validate/failed
-      # 2. What the render steps produce, against the cluster's exact Kubernetes version.
+      # 3. What the render steps produce, against the cluster's exact Kubernetes version.
       - task: render-all
         silent: true
         vars:

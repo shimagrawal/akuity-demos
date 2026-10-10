@@ -23,6 +23,7 @@ includes:
       ARGOCD_VERSION: '{{.ARGOCD_VERSION}}'
       K8S_VERSION: '{{.K8S_VERSION}}'
       KARGO_SCHEMAS: ../tools/schemas/kargo-{{.KARGO_VERSION}}
+      KARGO_STEP_SCHEMAS: ../tools/schemas/kargo-steps-{{.KARGO_VERSION}}
       ARGOCD_SCHEMAS: ../tools/schemas/argocd-{{.ARGOCD_VERSION}}
       K8S_SCHEMAS: ../tools/schemas/k8s-{{.K8S_VERSION}}
 
@@ -41,7 +42,7 @@ tasks:
                    ARGOCD_DESTINATION GITOPS_REPO_URL GITHUB_USERNAME GITHUB_PAT OCI_REPO_PREFIX; do
           [ -n "$(printenv "$var")" ] || { echo "ERROR: $var is not set"; exit 1; }
         done
-        for tool in akuity kargo envsubst kubectl; do
+        for tool in akuity kargo envsubst kubectl flux-schema yq python3; do
           command -v "$tool" >/dev/null || { echo "ERROR: $tool is not installed"; exit 1; }
         done
         echo "✓ .env and tools look good"
@@ -59,16 +60,23 @@ tasks:
     silent: true
     vars:
       OUT: tools/schemas/kargo-{{.KARGO_VERSION}}
+      STEPS_OUT: tools/schemas/kargo-steps-{{.KARGO_VERSION}}
       TMP:
         sh: mktemp -d -t kargo-crds
     status:
       - test -d {{.OUT}}
+      - test -d {{.STEPS_OUT}}
     cmds:
       - defer: rm -rf {{.TMP}}
       - curl -fsSL https://github.com/akuity/kargo/archive/refs/tags/{{.KARGO_VERSION}}.tar.gz | tar -xz -C {{.TMP}}
+      # CRD schemas, for flux-schema
       - rm -rf {{.OUT}}
       - flux-schema extract crd {{.TMP}}/*/charts/kargo/resources/crds/*.yaml -d {{.OUT}} --strip-description > /dev/null
-      - echo "Kargo {{.KARGO_VERSION}} schemas in {{.OUT}}"
+      # Step config schemas, for tools/lint-task.py, which finds them by step name:
+      # git-clone-config.json -> git-clone.json (shared files like argocd-common.json keep their name)
+      - rm -rf {{.STEPS_OUT}} && mkdir -p {{.STEPS_OUT}}
+      - for f in {{.TMP}}/*/pkg/promotion/runner/builtin/schemas/*.json; do n=$(basename "$f" .json); cp "$f" "{{.STEPS_OUT}}/${n%-config}.json"; done
+      - echo "Kargo {{.KARGO_VERSION}} schemas in {{.OUT}} and {{.STEPS_OUT}}"
   
   schemas:argocd:
     desc: Extract Argo CD CRD schemas at ARGOCD_VERSION

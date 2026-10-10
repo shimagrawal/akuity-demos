@@ -21,10 +21,15 @@ Tools: `brew install akuity kargo go-task gettext kubectl`.
 
 ## Local validation
 
-Validates Kargo, Argo CD and rendered Kubernetes manifests against schemas
-pinned to your environment (versions in the root `Taskfile.yaml`).
+Validates Kargo resources, Kargo step configs, Argo CD resources and rendered
+Kubernetes manifests against schemas pinned to your environment (versions in
+the root `Taskfile.yaml`). Step configs are checked with
+[`tools/lint-task.py`](tools/lint-task.py), copied from
+[curated-custom-promotion-tasks](https://github.com/blakepettersson/curated-custom-promotion-tasks).
 
 ```bash
+brew install yq
+
 # install flux-schema once (macOS arm64; other platforms on its releases page)
 curl -fsSL https://github.com/fluxcd/flux-schema/releases/download/v0.15.0/flux-schema_0.15.0_darwin_arm64.tar.gz \
   | tar -xz -C /opt/homebrew/bin flux-schema
