@@ -40,6 +40,25 @@ task oci:validate
 Bump `KARGO_VERSION`, `ARGOCD_VERSION` or `K8S_VERSION` when your environment
 is upgraded; the schemas are regenerated on the next run.
 
+## End-to-end test
+
+Runs a demo for real in a throwaway kind cluster: Kargo and Argo CD (pinned to
+the versions in the root `Taskfile.yaml`) apply the demo's own files and promote
+dev → test → prod. An in-cluster registry and Git server stand in for GHCR and
+GitHub, so no credentials are needed.
+
+```bash
+task oci:e2e             # full run (~5-15 min); deletes the cluster afterwards
+KEEP=1 task oci:e2e      # keep the cluster to inspect Kargo and Argo CD
+task oci:e2e:run         # rerun on a kept cluster (~2-3 min)
+task oci:e2e:down        # delete it
+```
+
+Needs Docker, `kind`, `kubectl`, `helm`, `jq` and `git`. It tests your working
+tree, including uncommitted changes. In CI it runs on pull requests that change
+a demo's `kargo/`, `argocd/` or `e2e/` files, weekly, and on demand
+([`.github/workflows/e2e.yaml`](.github/workflows/e2e.yaml)).
+
 ## Layout
 
 ```

@@ -1,0 +1,70 @@
+name: e2e
+
+# End-to-end test of oci-flow: real Kargo + Argo CD in a kind cluster run the
+# demo's own files and promote dev -> test -> prod. Slow (~5-15 min), so it
+# runs only when the flow itself changes, weekly to catch upstream drift, and on
+# demand. The fast `validate` workflow stays the check for every PR.
+on:
+  pull_request:
+    paths:
+      - 'oci-flow/kargo/**'
+      - 'oci-flow/argocd/**'
+      - 'oci-flow/e2e/**'
+      - 'Taskfile.yaml'
+      - '.github/workflows/e2e.yaml'
+  # schedule:
+  #   - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels a run still in progress.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Keep the cluster after the test so the diagnostics step can inspect it;
+      # the runner is thrown away afterwards anyway.
+      KEEP: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.1
+
+      - uses: azure/setup-helm@v4
+
+      - name: Install kind
+        env:
+          KIND_VERSION: v0.32.0
+        run: |
+          curl -fsSLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          kind version
+
+      - name: End-to-end test
+        run: task oci:e2e
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          ctx=kind-oci-e2e
+          kubectl --context $ctx get pods -A || true
+          kubectl --context $ctx -n oci-flow get promotions,freight,stages || true
+          kubectl --context $ctx -n argocd get applications -o wide || true
+          kubectl --context $ctx -n kargo logs deploy/kargo-controller --tail=100 || true
