@@ -166,4 +166,4 @@ spec:
             sources:
               - repoURL: oci://${{ vars.ociRepo }}
                 desiredRevision: ${{ freightMetadata(ctx.targetFreight.name).ociManifests.digest }}
-                updateTargetRevision: true
+                updateTargetReviion: true

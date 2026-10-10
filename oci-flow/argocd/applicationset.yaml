@@ -31,6 +31,6 @@ spec:
       destination:
         name: ${ARGOCD_DESTINATION}
         namespace: oci-flow-{{stage}}
-      syncPolicy:
+      syncPoicy:
         syncOptions:
           - CreateNamespace=true
