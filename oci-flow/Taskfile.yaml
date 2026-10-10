@@ -91,7 +91,11 @@ tasks:
           [ "$(yq 'length' "$f.json")" = 0 ] && continue
           name="${f#.validate/}"
           if python3 ../tools/lint-task.py {{.KARGO_STEP_SCHEMAS}} "$f.json" > "$f.lint"; then
-            name="$name" yq -r '.[] | (.spec.steps | length) as $n | "  ✓ " + .kind + "/" + .metadata.name + ": " + ($n | tostring) + (if $n == 1 then " step" else " steps" end) + "   (" + strenv(name) + ")"' "$f.json"
+            yq -r '.[] | .kind + "/" + .metadata.name + " " + (.spec.steps | length | tostring)' "$f.json" |
+              while read -r res n; do
+                [ "$n" = 1 ] && unit=step || unit=steps
+                echo "  ✓ $res: $n $unit   ($name)"
+              done
           else
             sed "s#^#  ✗ #; s#\$#   ($name)#" "$f.lint"
             touch .validate/failed

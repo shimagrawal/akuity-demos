@@ -1,0 +1,72 @@
+name: validate
+
+# Runs the same local checks as `task oci:validate`: Kargo resources, Kargo step
+# configs, Argo CD resources and rendered manifests, against pinned schemas.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      # Values the demo YAML files reference via envsubst. Not secrets.
+      GITOPS_REPO_URL: https://github.com/${{ github.repository }}.git
+      OCI_REPO_PREFIX: ghcr.io/${{ github.repository_owner }}/akuity-demos
+      ARGOCD_DESTINATION: in-cluster
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same version as the cluster, so `kubectl kustomize` renders the same.
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.1
+
+      - uses: azure/setup-helm@v4
+
+      - name: Install flux-schema and yq
+        env:
+          FLUX_SCHEMA_VERSION: 0.15.0
+          # Pinned rather than the runner's copy, whose version changes with the image.
+          YQ_VERSION: v4.47.1
+        run: |
+          curl -fsSL "https://github.com/fluxcd/flux-schema/releases/download/v${FLUX_SCHEMA_VERSION}/flux-schema_${FLUX_SCHEMA_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin flux-schema
+          sudo curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+          flux-schema --version
+          yq --version
+
+      - name: Check preinstalled tools
+        run: |
+          for tool in python3 envsubst; do command -v "$tool"; done
+
+      # Pinned schemas only change when versions in Taskfile.yaml change.
+      - uses: actions/cache@v4
+        with:
+          path: tools/schemas
+          key: schemas-${{ hashFiles('Taskfile.yaml') }}
+
+      - name: Validate oci-flow
+        run: |
+          task oci:validate | tee validate.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### oci-flow validation'
+            echo '```'
+            cat validate.txt 2>/dev/null || echo "validation did not run"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

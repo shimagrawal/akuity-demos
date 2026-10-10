@@ -62,7 +62,7 @@ tasks:
       OUT: tools/schemas/kargo-{{.KARGO_VERSION}}
       STEPS_OUT: tools/schemas/kargo-steps-{{.KARGO_VERSION}}
       TMP:
-        sh: mktemp -d -t kargo-crds
+        sh: mktemp -d "${TMPDIR:-/tmp}/kargo-crds.XXXXXX"
     status:
       - test -d {{.OUT}}
       - test -d {{.STEPS_OUT}}
@@ -84,7 +84,7 @@ tasks:
     vars:
       OUT: tools/schemas/argocd-{{.ARGOCD_VERSION}}
       TMP:
-        sh: mktemp -d -t argocd-crds
+        sh: mktemp -d "${TMPDIR:-/tmp}/argocd-crds.XXXXXX"
     status:
       - test -d {{.OUT}}
     cmds:
