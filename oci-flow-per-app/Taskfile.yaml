@@ -1,0 +1,72 @@
+version: '3'
+
+# OCI flow, one artifact per app: Kargo renders every app for every stage once,
+# pushes one OCI artifact per app, and a Warehouse per app turns each new
+# artifact into Freight that the app's own dev -> test -> prod Stages promote.
+# Run from the repo root: task oci-per-app:<name>
+#
+# Validation and the end-to-end test are shared tooling (tools/), configured by
+# demo.yaml; the tasks below only add shortcuts for them.
+
+vars:
+  # Only these are substituted, so Kargo's ${{ ... }} expressions are left alone.
+  ENVSUBST_VARS: '${GITOPS_REPO_URL} ${OCI_REPO_PREFIX} ${ARGOCD_DESTINATION} ${GITHUB_USERNAME} ${GITHUB_PAT}'
+
+tasks:
+  apply-argocd:
+    desc: Create the Argo CD AppProject and ApplicationSet
+    cmds:
+      - for: [argocd/app-project.yaml, argocd/applicationset.yaml]
+        cmd: >-
+          envsubst '{{.ENVSUBST_VARS}}' < {{.ITEM}} |
+          akuity argocd apply -f - --name "$AKUITY_ARGOCD_INSTANCE_NAME" --org-name "$AKUITY_ORG_NAME"
+
+  apply-kargo:
+    desc: Create the Kargo Project, credentials, Warehouses, PromotionTasks and Stages
+    cmds:
+      - for: [kargo/project.yaml, secrets.yaml, kargo/warehouse.yaml, kargo/promotiontasks.yaml, kargo/stages.yaml]
+        cmd: >-
+          envsubst '{{.ENVSUBST_VARS}}' < {{.ITEM}} |
+          akuity kargo apply -f - --name "$AKUITY_KARGO_INSTANCE_NAME" --org-name "$AKUITY_ORG_NAME"
+
+  setup:
+    desc: Set up the whole per-app OCI flow demo
+    cmds:
+      - task: apply-argocd
+      - task: apply-kargo
+
+  # --- Shortcuts for the shared tooling (see the root Taskfile and demo.yaml) ---
+
+  validate:
+    desc: Validate this demo (same as `task validate DEMO=oci-flow-per-app`)
+    cmds:
+      - task: :validate
+        vars: { DEMO: oci-flow-per-app }
+
+  render:
+    desc: Preview one stage, both apps (task oci-per-app:render STAGE=dev)
+    cmds:
+      - task: :render
+        vars: { DEMO: oci-flow-per-app, STAGE: '{{.STAGE | default "dev"}}' }
+
+  e2e:
+    desc: End-to-end test of this demo (same as `task e2e DEMO=oci-flow-per-app`; KEEP=1 keeps the cluster)
+    cmds:
+      - task: :e2e
+        vars: { DEMO: oci-flow-per-app }
+
+  e2e:run:
+    desc: Rerun this demo's end-to-end test on a running e2e cluster
+    cmds:
+      - task: :e2e:run
+        vars: { DEMO: oci-flow-per-app }
+
+  port-forward:
+    desc: Port-forward to an app in a stage (task oci-per-app:port-forward STAGE=dev APP=hello)
+    vars:
+      STAGE: '{{.STAGE | default "dev"}}'
+      APP: '{{.APP | default "nginx"}}'
+      PORT: '{{.PORT | default "8080"}}'
+    cmds:
+      - echo "Open http://localhost:{{.PORT}}"
+      - kubectl port-forward svc/{{.APP}} {{.PORT}}:80 -n oci-flow-per-app-{{.STAGE}}

@@ -1,0 +1,3 @@
+# dev overrides
+replicas: 1
+message: Hello from Helm - DEV

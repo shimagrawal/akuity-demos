@@ -1,0 +1,24 @@
+name: oci-flow-per-app
+
+# Pinned to what this demo runs on (Akuity Kargo v1.12.2-ak.0, Argo CD v3.5.4-ak).
+versions:
+  kargo: v1.12.2
+  argocd: v3.5.4
+  kubernetes: 1.36.1
+
+# Placeholders used in kargo/ and argocd/, filled from the environment or .env.
+substitute:
+  - GITOPS_REPO_URL
+  - OCI_REPO_PREFIX
+  - ARGOCD_DESTINATION
+
+stages: [dev, test, prod]
+
+# Mirrors the render steps of the oci-publish PromotionTask.
+render:
+  - app: nginx
+    kustomize: apps/nginx/overlays/{stage}
+  - app: hello
+    helm:
+      chart: apps/hello
+      values: apps/hello/values-{stage}.yaml

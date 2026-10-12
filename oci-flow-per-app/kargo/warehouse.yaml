@@ -1,0 +1,60 @@
+# Two kinds of Warehouse:
+#
+#   sources          what the apps are rendered FROM (nginx image + this repo).
+#                    Only the render Stage uses its Freight.
+#   <app>-manifests  what the render Stage pushed for one app: a new digest of
+#                    that app's OCI artifact becomes a new Freight. The app's
+#                    dev, test and prod Stages promote this Freight.
+
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: sources
+  namespace: oci-flow-per-app
+spec:
+  interval: 5m0s
+  subscriptions:
+    # A new nginx tag produces new Freight.
+    - image:
+        repoURL: public.ecr.aws/nginx/nginx
+        constraint: ^1.27.0
+        discoveryLimit: 5
+
+    # So does a change to either app (Kustomize nginx or Helm hello).
+    - git:
+        repoURL: ${GITOPS_REPO_URL}
+        branch: main
+        includePaths:
+          - oci-flow-per-app/apps
+        discoveryLimit: 5
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: nginx-manifests
+  namespace: oci-flow-per-app
+spec:
+  interval: 5m0s
+  subscriptions:
+    # The digest behind the `latest` tag, which the render Stage moves on every
+    # push. Every render pushes a new digest (tar records file times), so every
+    # render makes new Freight here.
+    - image:
+        repoURL: ${OCI_REPO_PREFIX}/oci-flow-per-app/nginx
+        imageSelectionStrategy: Digest
+        constraint: latest
+        discoveryLimit: 5
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: hello-manifests
+  namespace: oci-flow-per-app
+spec:
+  interval: 5m0s
+  subscriptions:
+    - image:
+        repoURL: ${OCI_REPO_PREFIX}/oci-flow-per-app/hello
+        imageSelectionStrategy: Digest
+        constraint: latest
+        discoveryLimit: 5

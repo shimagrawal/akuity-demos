@@ -1,0 +1,52 @@
+# How the shared tooling (tools/) validates and end-to-end tests this demo.
+# Everything else about the demo lives in kargo/, argocd/ and apps/.
+#
+#   task validate DEMO=oci-flow-per-app     task e2e DEMO=oci-flow-per-app
+
+# Kargo Project (and namespace) the demo's kargo/ files create.
+name: oci-flow-per-app
+
+# Environments every app is rendered for and deployed to.
+stages: [dev, test, prod]
+
+# How to render each app per stage, mirroring the render steps in
+# kargo/promotiontasks.yaml (oci-publish). {stage} is replaced by the stage name.
+render:
+  - app: nginx
+    kustomize: apps/nginx/overlays/{stage}
+  - app: hello
+    helm:
+      chart: apps/hello
+      release: hello
+      values: apps/hello/values-{stage}.yaml
+
+e2e:
+  # Warehouse to refresh after seeding the in-cluster Git server.
+  warehouse: sources
+  # Promotions, in order. Without `warehouse:` a promotion uses the Freight the
+  # source Warehouse made for the seeded commit; with it, the newest Freight of
+  # that Warehouse (refreshed first): here, the artifact render just pushed.
+  promotions:
+    - stage: render
+    - { stage: nginx-dev, warehouse: nginx-manifests }
+    - { stage: nginx-test, warehouse: nginx-manifests }
+    - { stage: nginx-prod, warehouse: nginx-manifests }
+    - { stage: hello-dev, warehouse: hello-manifests }
+    - { stage: hello-test, warehouse: hello-manifests }
+    - { stage: hello-prod, warehouse: hello-manifests }
+  # Argo CD Application per app and stage. Every stage of an app must run the
+  # same digest. {app} is replaced by each of apps.
+  apps: [nginx, hello]
+  application: oci-flow-per-app-{app}-{stage}
+  # OCI repositories (under OCI_REPO_PREFIX) the Applications pull from. Argo CD
+  # is told they speak plain HTTP inside the test cluster.
+  ociRepositories:
+    - oci-flow-per-app/nginx
+    - oci-flow-per-app/hello
+  # Requests made from inside the cluster after promotion, and the text each
+  # response must contain. {stage} / {STAGE}: stage name, lower / upper case.
+  checks:
+    - url: http://nginx.oci-flow-per-app-{stage}.svc
+      expect: NGINX - {STAGE}
+    - url: http://hello.oci-flow-per-app-{stage}.svc
+      expect: Hello from Helm - {STAGE}

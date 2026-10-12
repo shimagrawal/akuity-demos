@@ -1,0 +1,13 @@
+# Defaults. Each stage overrides some of these in values-<stage>.yaml.
+
+image:
+  repository: hashicorp/http-echo
+  tag: 1.0.0
+
+replicas: 1
+
+# Text the server answers every request with.
+message: Hello from Helm
+
+service:
+  port: 80
