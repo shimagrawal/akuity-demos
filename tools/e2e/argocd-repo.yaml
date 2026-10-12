@@ -1,7 +1,8 @@
 # Test-only: tells Argo CD a demo's OCI repository in the in-cluster registry
 # speaks plain HTTP. The declarative form of
 # `argocd repo add oci://... --type oci --insecure-oci-force-http`.
-# Filled in by e2e.sh from the demo's demo.yaml (name, e2e.ociRepository).
+# Filled in by e2e.sh, once per repository in the demo's demo.yaml
+# (e2e.ociRepository or e2e.ociRepositories).
 apiVersion: v1
 kind: Secret
 metadata:

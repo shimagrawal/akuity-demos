@@ -1,0 +1,169 @@
+# Render once, one artifact per app, deploy everywhere.
+#
+#   render     -> oci-publish: render every app for dev, test and prod from one
+#                 commit, push ONE artifact PER APP, move its `latest` tag.
+#                 Each <app>-manifests Warehouse turns a new digest into Freight.
+#   <app>-dev  -> oci-deploy:  deploy the digest in the app's artifact Freight
+#   <app>-test -> oci-deploy
+#   <app>-prod -> oci-deploy
+#
+# Each artifact holds one app for every stage; each Argo CD Application reads
+# its own subdirectory (path: dev | test | prod):
+#
+#   oci-flow-per-app/nginx:  dev/  test/  prod/
+#   oci-flow-per-app/hello:  dev/  test/  prod/
+
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: oci-publish
+  namespace: oci-flow-per-app
+spec:
+  vars:
+    - name: gitopsRepo
+      value: ${GITOPS_REPO_URL}
+    - name: imageRepo
+      value: public.ecr.aws/nginx/nginx
+    - name: ociPrefix
+      value: ${OCI_REPO_PREFIX}/oci-flow-per-app
+
+  steps:
+    # 1. Check out the exact commit pinned in the Freight, not whatever main is now.
+    - uses: git-clone
+      as: clone
+      config:
+        repoURL: ${{ vars.gitopsRepo }}
+        checkout:
+          - commit: ${{ commitFrom(vars.gitopsRepo).ID }}
+            path: ./src
+
+    # 2. Set the nginx tag from the Freight.
+    - uses: kustomize-set-image
+      as: set-image
+      config:
+        path: ./src/oci-flow-per-app/apps/nginx/base
+        images:
+          - image: ${{ vars.imageRepo }}
+            tag: ${{ imageFrom(vars.imageRepo).Tag }}
+
+    # 3. Render every app for every stage, each into ./out/<app>/<stage>.
+    #    Adding a stage or an app means adding steps here: steps cannot loop.
+
+    # nginx: Kustomize overlays
+    - uses: kustomize-build
+      as: render-nginx-dev
+      config:
+        path: ./src/oci-flow-per-app/apps/nginx/overlays/dev
+        outPath: ./out/nginx/dev
+    - uses: kustomize-build
+      as: render-nginx-test
+      config:
+        path: ./src/oci-flow-per-app/apps/nginx/overlays/test
+        outPath: ./out/nginx/test
+    - uses: kustomize-build
+      as: render-nginx-prod
+      config:
+        path: ./src/oci-flow-per-app/apps/nginx/overlays/prod
+        outPath: ./out/nginx/prod
+
+    # hello: Helm chart with values-<stage>.yaml on top of values.yaml
+    - uses: helm-template
+      as: render-hello-dev
+      config:
+        path: ./src/oci-flow-per-app/apps/hello
+        releaseName: hello
+        valuesFiles:
+          - ./src/oci-flow-per-app/apps/hello/values-dev.yaml
+        outPath: ./out/hello/dev
+        outLayout: flat
+    - uses: helm-template
+      as: render-hello-test
+      config:
+        path: ./src/oci-flow-per-app/apps/hello
+        releaseName: hello
+        valuesFiles:
+          - ./src/oci-flow-per-app/apps/hello/values-test.yaml
+        outPath: ./out/hello/test
+        outLayout: flat
+    - uses: helm-template
+      as: render-hello-prod
+      config:
+        path: ./src/oci-flow-per-app/apps/hello
+        releaseName: hello
+        valuesFiles:
+          - ./src/oci-flow-per-app/apps/hello/values-prod.yaml
+        outPath: ./out/hello/prod
+        outLayout: flat
+
+    # 4. Per app: pack, push under an immutable tag named after the Freight, and
+    #    move `latest` to the same digest (a retag: no upload). The app's
+    #    -manifests Warehouse follows `latest`. gzip: true is required: tar
+    #    defaults to uncompressed, but oci-push labels the layer as gzip.
+    - uses: tar
+      as: archiveNginx
+      config:
+        inPath: ./out/nginx
+        outPath: ./nginx.tar.gz
+        gzip: true
+    - uses: oci-push
+      as: pushNginx
+      config:
+        srcPath: ./nginx.tar.gz
+        destRef: ${{ vars.ociPrefix }}/nginx:${{ ctx.targetFreight.name }}
+        annotations:
+          org.opencontainers.image.source: ${{ vars.gitopsRepo }}
+          org.opencontainers.image.revision: ${{ commitFrom(vars.gitopsRepo).ID }}
+          io.kargo.freight: ${{ ctx.targetFreight.name }}
+          io.kargo.promotion: ${{ ctx.promotion }}
+    - uses: oci-push
+      as: retagNginx
+      config:
+        srcRef: ${{ vars.ociPrefix }}/nginx@${{ task.outputs.pushNginx.digest }}
+        destRef: ${{ vars.ociPrefix }}/nginx:latest
+    - uses: tar
+      as: archiveHello
+      config:
+        inPath: ./out/hello
+        outPath: ./hello.tar.gz
+        gzip: true
+    - uses: oci-push
+      as: pushHello
+      config:
+        srcPath: ./hello.tar.gz
+        destRef: ${{ vars.ociPrefix }}/hello:${{ ctx.targetFreight.name }}
+        annotations:
+          org.opencontainers.image.source: ${{ vars.gitopsRepo }}
+          org.opencontainers.image.revision: ${{ commitFrom(vars.gitopsRepo).ID }}
+          io.kargo.freight: ${{ ctx.targetFreight.name }}
+          io.kargo.promotion: ${{ ctx.promotion }}
+    - uses: oci-push
+      as: retagHello
+      config:
+        srcRef: ${{ vars.ociPrefix }}/hello@${{ task.outputs.pushHello.digest }}
+        destRef: ${{ vars.ociPrefix }}/hello:latest
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: oci-deploy
+  namespace: oci-flow-per-app
+spec:
+  vars:
+    # Set by each Stage: nginx or hello.
+    - name: app
+    - name: ociPrefix
+      value: ${OCI_REPO_PREFIX}/oci-flow-per-app
+
+  steps:
+    # No clone and no render: the Freight being promoted IS the app's artifact,
+    # so its digest comes straight from it. Must be the digest, not a tag, or
+    # this step waits forever.
+    - uses: argocd-update
+      as: deploy
+      config:
+        apps:
+          - name: oci-flow-per-app-${{ ctx.stage }}
+            sources:
+              - repoURL: oci://${{ vars.ociPrefix }}/${{ vars.app }}
+                desiredRevision: ${{ imageFrom(vars.ociPrefix + '/' + vars.app).Digest }}
+                updateTargetRevision: true

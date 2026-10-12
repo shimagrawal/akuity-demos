@@ -118,7 +118,27 @@ load_demo() {
   WAREHOUSE="$(cfg '.e2e.warehouse')"
   APP_TEMPLATE="$(cfg '.e2e.application')"
   DIGEST_FROM="$(cfg '.e2e.digestFrom')"
-  OCI_REPOSITORY="$(cfg '.e2e.ociRepository')"
+  # One repository (ociRepository) or several (ociRepositories).
+  OCI_REPOSITORIES=()
+  local item
+  while IFS= read -r item; do [ -n "$item" ] && OCI_REPOSITORIES+=("$item"); done < <(
+    cfg '.e2e.ociRepository'
+    echo
+    cfg_list '.e2e.ociRepositories'
+  )
+  # Apps substituted for {app} in e2e.application (none: a single Application per stage).
+  APPS=()
+  while IFS= read -r item; do APPS+=("$item"); done < <(cfg_list '.e2e.apps')
+  [ "${#APPS[@]}" -gt 0 ] || APPS=("")
+  # Promotions, in order: "stage warehouse" (warehouse empty: the source Freight).
+  # Default: every stage, in order, with the source Freight.
+  PROMOTIONS=()
+  while IFS= read -r item; do PROMOTIONS+=("$item"); done < <(
+    yq -r '(.e2e.promotions // []) | .[] | .stage + " " + (.warehouse // "")' "$DEMO_CFG"
+  )
+  if [ "${#PROMOTIONS[@]}" -eq 0 ]; then
+    for item in "${STAGES[@]}"; do PROMOTIONS+=("$item "); done
+  fi
   if [ -z "$WAREHOUSE" ] || [ -z "$APP_TEMPLATE" ]; then
     die "$DEMO_CFG needs e2e.warehouse and e2e.application"
   fi
@@ -157,13 +177,14 @@ apply_demo() {
   export GITOPS_REPO_URL="http://git.$INFRA.svc.cluster.local/repo.git"
   export OCI_REPO_PREFIX="$registry_ip:5000/akuity-demos"
   export ARGOCD_DESTINATION=in-cluster
-  export E2E_NAME="$PROJECT" E2E_OCI_REPOSITORY="$OCI_REPOSITORY"
   # shellcheck disable=SC2016 # literal names for envsubst, not expansions
   local vars='${GITOPS_REPO_URL} ${OCI_REPO_PREFIX} ${ARGOCD_DESTINATION} ${E2E_NAME} ${E2E_OCI_REPOSITORY}'
 
-  if [ -n "$OCI_REPOSITORY" ]; then
-    envsubst "$vars" < "$HERE/argocd-repo.yaml" | k apply -f - > /dev/null
-  fi
+  local repo
+  for repo in ${OCI_REPOSITORIES[@]+"${OCI_REPOSITORIES[@]}"}; do
+    E2E_NAME="$(printf '%s' "$repo" | tr '/' '-')" E2E_OCI_REPOSITORY="$repo" \
+      envsubst "$vars" < "$HERE/argocd-repo.yaml" | k apply -f - > /dev/null
+  done
   for f in "$DEMO_DIR"/argocd/*.yaml; do
     envsubst "$vars" < "$f" | k apply -f - > /dev/null
     ok "argocd/$(basename "$f")"
@@ -188,15 +209,54 @@ freight_for_commit() {
     'first(.items[] | select(any(.commits[]?; .id == $c)) | .metadata.name)'
 }
 
+describe_freight() {
+  k -n "$PROJECT" get freight "$1" -o json | jq -r '
+    [(.images // [])[] | "\(.repoURL | split("/") | last) \(.tag // (.digest[0:19]))"]
+    + [(.charts // [])[] | "\(.name) \(.version)"]
+    + [(.commits // [])[] | "commit \(.id[0:7])"] | join(", ")'
+}
+
 find_freight() {
   say "Waiting for Warehouse $WAREHOUSE to produce Freight for commit ${COMMIT:0:7}"
   k -n "$PROJECT" annotate warehouse "$WAREHOUSE" kargo.akuity.io/refresh="$(date +%s)" --overwrite > /dev/null
   wait_for "Freight for commit $COMMIT" 300 freight_for_commit
-  FREIGHT="$(freight_for_commit)"
-  ok "Freight $FREIGHT: $(k -n "$PROJECT" get freight "$FREIGHT" -o json | jq -r '
-    [(.images // [])[] | "\(.repoURL | split("/") | last) \(.tag)"]
-    + [(.charts // [])[] | "\(.name) \(.version)"]
-    + [(.commits // [])[] | "commit \(.id[0:7])"] | join(", ")')"
+  SOURCE_FREIGHT="$(freight_for_commit)"
+  ok "Freight $SOURCE_FREIGHT: $(describe_freight "$SOURCE_FREIGHT")"
+}
+
+refresh_handled() {
+  [ "$(k -n "$PROJECT" get warehouse "$1" -o jsonpath='{.status.lastHandledRefresh}')" = "$2" ]
+}
+
+# freight_with_discovered <warehouse>: the newest Freight of the Warehouse
+# holding every image digest it last discovered. (Not status.lastFreightID: when
+# that Freight already exists, the ID does not match it.)
+freight_with_discovered() {
+  local digests
+  digests="$(k -n "$PROJECT" get warehouse "$1" -o json |
+    jq -c '[.status.discoveredArtifacts.images // [] | .[] | .references[0].digest]')"
+  k -n "$PROJECT" get freight -o json | jq -re --arg w "$1" --argjson d "$digests" '
+    [.items[] | select(.origin.name == $w)
+      | select(($d | length) > 0 and ([(.images // [])[].digest] | contains($d)))]
+    | sort_by(.metadata.creationTimestamp) | last | .metadata.name'
+}
+
+# warehouse_freight <warehouse>: refreshes it and sets FREIGHT to the Freight
+# for what it discovers, e.g. the artifact a previous promotion pushed.
+warehouse_freight() {
+  local warehouse="$1" token
+  token="e2e-$(date +%s)-$RANDOM"
+  k -n "$PROJECT" annotate warehouse "$warehouse" kargo.akuity.io/refresh="$token" --overwrite > /dev/null
+  wait_for "Warehouse $warehouse to refresh" 300 refresh_handled "$warehouse" "$token"
+  # Freight is created right after discovery, so allow a moment.
+  wait_for "Freight from Warehouse $warehouse" 60 freight_with_discovered "$warehouse"
+  FREIGHT="$(freight_with_discovered "$warehouse")"
+  if [ -z "$FREIGHT" ]; then
+    k -n "$PROJECT" get warehouse "$warehouse" -o json |
+      jq -r '.status.conditions[]? | "    \(.type): \(.status) \(.message // "")"' >&2
+    die "Warehouse $warehouse has no Freight"
+  fi
+  ok "Freight $FREIGHT from $warehouse: $(describe_freight "$FREIGHT")"
 }
 
 promotion_phase() { k -n "$PROJECT" get promotion "$1" -o jsonpath='{.status.phase}' 2> /dev/null; }
@@ -214,7 +274,7 @@ explain_promotion() {
 
 promote() {
   local stage="$1" name
-  say "Promoting into $stage"
+  say "Promoting $FREIGHT into $stage"
   name="$(k create -o name -f - << EOF
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Promotion
@@ -241,28 +301,35 @@ EOF
 
 check() {
   say "Checking the result"
-  local expected="" stage app rev sync health checks i url expect response failed=0
+  local recorded="" expected stage name app rev sync health checks i url expect response failed=0 ran=""
   if [ -n "$DIGEST_FROM" ]; then
-    expected="$(k -n "$PROJECT" get freight "$FREIGHT" -o json | jq -r ".status.metadata.$DIGEST_FROM // empty")"
-    [ -n "$expected" ] || die "no $DIGEST_FROM recorded on Freight $FREIGHT"
-    ok "Freight records digest $expected"
+    recorded="$(k -n "$PROJECT" get freight "$SOURCE_FREIGHT" -o json | jq -r ".status.metadata.$DIGEST_FROM // empty")"
+    [ -n "$recorded" ] || die "no $DIGEST_FROM recorded on Freight $SOURCE_FREIGHT"
+    ok "Freight records digest $recorded"
   fi
   checks="$(cfg '.e2e.checks | length')"
 
-  for stage in "${STAGES[@]}"; do
-    # Every stage must run the same revision: the Freight's digest, or else dev's.
-    app="$(with_stage "$APP_TEMPLATE" "$stage")"
-    rev="$(k -n argocd get application "$app" -o jsonpath='{.status.sync.revision}')"
-    sync="$(k -n argocd get application "$app" -o jsonpath='{.status.sync.status}')"
-    health="$(k -n argocd get application "$app" -o jsonpath='{.status.health.status}')"
-    [ -n "$expected" ] || expected="$rev"
-    if [ -n "$rev" ] && [ "$rev" = "$expected" ] && [ "$sync" = Synced ] && [ "$health" = Healthy ]; then
-      ok "$app: $sync, $health, same digest"
-    else
-      printf '  ✗ %s: %s, %s, revision %s (expected %s)\n' "$app" "$sync" "$health" "$rev" "$expected" >&2
-      failed=1
-    fi
+  # Every stage of an app must run the same revision: the recorded digest, or
+  # else what the app's first stage runs.
+  for app in "${APPS[@]}"; do
+    expected="$recorded"
+    for stage in "${STAGES[@]}"; do
+      name="$(with_stage "${APP_TEMPLATE//\{app\}/$app}" "$stage")"
+      rev="$(k -n argocd get application "$name" -o jsonpath='{.status.sync.revision}')"
+      sync="$(k -n argocd get application "$name" -o jsonpath='{.status.sync.status}')"
+      health="$(k -n argocd get application "$name" -o jsonpath='{.status.health.status}')"
+      [ -n "$expected" ] || expected="$rev"
+      if [ -n "$rev" ] && [ "$rev" = "$expected" ] && [ "$sync" = Synced ] && [ "$health" = Healthy ]; then
+        ok "$name: $sync, $health, same digest"
+      else
+        printf '  ✗ %s: %s, %s, revision %s (expected %s)\n' "$name" "$sync" "$health" "$rev" "$expected" >&2
+        failed=1
+      fi
+    done
+    ran="$ran${ran:+, }${app:+$app }$expected"
+  done
 
+  for stage in "${STAGES[@]}"; do
     i=0
     while [ "$i" -lt "${checks:-0}" ]; do
       url="$(with_stage "$(cfg ".e2e.checks[$i].url")" "$stage")"
@@ -279,7 +346,7 @@ check() {
   done
 
   [ "$failed" = 0 ] || die "End-to-end test failed"
-  printf '\n✓ End-to-end test passed: %s runs %s in %s\n' "$PROJECT" "$expected" "${STAGES[*]}"
+  printf '\n✓ End-to-end test passed: %s runs %s in %s\n' "$PROJECT" "$ran" "${STAGES[*]}"
 }
 
 run() {
@@ -288,8 +355,17 @@ run() {
   seed
   apply_demo
   find_freight
-  local stage
-  for stage in "${STAGES[@]}"; do promote "$stage"; done
+  local promotion stage warehouse
+  for promotion in "${PROMOTIONS[@]}"; do
+    stage="${promotion%% *}"
+    warehouse="${promotion#* }"
+    if [ -n "$warehouse" ]; then
+      warehouse_freight "$warehouse"
+    else
+      FREIGHT="$SOURCE_FREIGHT"
+    fi
+    promote "$stage"
+  done
   check
 }
 

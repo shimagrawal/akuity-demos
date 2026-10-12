@@ -1,0 +1,40 @@
+# One Application per app per stage: oci-flow-per-app-<app>-<stage>.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: oci-flow-per-app
+  namespace: argocd
+spec:
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - app: nginx
+                - app: hello
+          - list:
+              elements:
+                - stage: dev
+                - stage: test
+                - stage: prod
+  template:
+    metadata:
+      name: oci-flow-per-app-{{app}}-{{stage}}
+      annotations:
+        # lets the app's Kargo Stage (e.g. nginx-dev) update this Application
+        kargo.akuity.io/authorized-stage: oci-flow-per-app:{{app}}-{{stage}}
+    spec:
+      project: oci-flow-per-app
+      source:
+        # this app's rendered manifests, published by Kargo
+        repoURL: oci://${OCI_REPO_PREFIX}/oci-flow-per-app/{{app}}
+        # Kargo replaces the tag with the digest
+        targetRevision: latest
+        # each stage reads its own subdirectory of the app's artifact
+        path: '{{stage}}'
+      destination:
+        name: ${ARGOCD_DESTINATION}
+        namespace: oci-flow-per-app-{{stage}}
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true

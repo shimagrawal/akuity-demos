@@ -7,6 +7,7 @@ never collide.
 | Demo | What it shows |
 |---|---|
 | [`oci-flow/`](oci-flow) | Kargo renders each stage, publishes it to GHCR as an OCI artifact, and points Argo CD at the pushed digest. No stage branches. |
+| [`oci-flow-per-app/`](oci-flow-per-app) | The same, shaped for many apps: one OCI artifact per app, a Warehouse per app that turns each pushed artifact into Freight, and an independent dev → test → prod pipeline per app. |
 
 ## Getting started
 

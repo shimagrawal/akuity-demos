@@ -1,0 +1,157 @@
+# render: renders every app from the sources Freight and pushes one artifact
+# per app. It deploys nothing.
+#
+# Then one pipeline per app, promoting that app's artifact Freight:
+#
+#   nginx-dev -> nginx-test -> nginx-prod      (Freight from nginx-manifests)
+#   hello-dev -> hello-test -> hello-prod      (Freight from hello-manifests)
+#
+# The apps move independently: promoting nginx never touches hello.
+
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: render
+  namespace: oci-flow-per-app
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: sources
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: oci-publish
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: nginx-dev
+  namespace: oci-flow-per-app
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: nginx-manifests
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: oci-deploy
+          vars:
+            - name: app
+              value: nginx
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: nginx-test
+  namespace: oci-flow-per-app
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: nginx-manifests
+      sources:
+        stages:
+          - nginx-dev
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: oci-deploy
+          vars:
+            - name: app
+              value: nginx
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: nginx-prod
+  namespace: oci-flow-per-app
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: nginx-manifests
+      sources:
+        stages:
+          - nginx-test
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: oci-deploy
+          vars:
+            - name: app
+              value: nginx
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: hello-dev
+  namespace: oci-flow-per-app
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: hello-manifests
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: oci-deploy
+          vars:
+            - name: app
+              value: hello
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: hello-test
+  namespace: oci-flow-per-app
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: hello-manifests
+      sources:
+        stages:
+          - hello-dev
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: oci-deploy
+          vars:
+            - name: app
+              value: hello
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: hello-prod
+  namespace: oci-flow-per-app
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: hello-manifests
+      sources:
+        stages:
+          - hello-test
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: oci-deploy
+          vars:
+            - name: app
+              value: hello
